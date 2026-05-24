@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,26 +32,52 @@ jobs:
       - name: Build executable with PyInstaller
         run: |
           pyinstaller --onefile --windowed --name "PinterestCrawler" `
-            --add-data "requirements.txt;." `
+            --icon="log.ico" `
+            --add-data "log.ico;." `
+            --add-data "pinterest_crawler.py;." `
             --hidden-import selenium `
             --hidden-import webdriver_manager `
+            --hidden-import webdriver_manager.chrome `
             --hidden-import requests `
+            --hidden-import pystray `
+            --hidden-import "pystray._win32" `
+            --hidden-import PIL `
+            --hidden-import PIL.Image `
+            --hidden-import PIL.IcoImagePlugin `
             app.py
 
-      - name: List build output
+      - name: Verify build output
         run: dir dist\
 
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v2
         with:
           subject-path: dist/PinterestCrawler.exe
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/PinterestCrawler.exe
           generate_release_notes: true
           draft: false
           prerelease: false
+          body: |
+            ## Pinterest 高清图片爬取工具 ${{ github.ref_name }}
+
+            ### 下载安装
+            1. 下载 `PinterestCrawler.exe`
+            2. 双击运行，无需安装 Python
+
+            ### 更新内容
+            - 支持关键词 / Pinterest 链接两种爬取模式
+            - 分层爬取（第一层最相关 + 延申扩展）
+            - 高清原图自动升级（originals/736x）
+            - 系统托盘图标（最小化后继续运行）
+            - 现代深色主题 UI
+
+            ### 系统要求
+            - Windows 10/11 (64位)
+            - Google Chrome 浏览器（已安装）
+            - 网络连接（可访问 Pinterest）
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

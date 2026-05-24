@@ -1,6 +1,7 @@
 """
 Pinterest Image Crawler - UI 主界面
 现代化深色主题 Tkinter GUI
+v1.0.0
 """
 
 import os
@@ -11,9 +12,27 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import pystray
+    from pystray import MenuItem as TrayItem
+    from PIL import Image as PILImage
+    TRAY_AVAILABLE = True
+except ImportError:
+    TRAY_AVAILABLE = False
+
 # 确保能导入爬虫模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinterest_crawler import PinterestCrawler, setup_logger
+
+
+def resource_path(relative_path: str) -> str:
+    """获取资源文件的绝对路径（兼容 PyInstaller 打包后的路径）"""
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller 打包后，资源解压到临时目录 _MEIPASS
+        base = sys._MEIPASS
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, relative_path)
 
 
 # ─────────────────────────────────────────────
@@ -57,6 +76,11 @@ class ModernButton(tk.Button):
         }
         
         bg, active_bg, fg = colors.get(style, colors["primary"])
+        
+        # 允许调用方通过 kwargs 覆盖默认的 padx/pady/font
+        padx = kwargs.pop("padx", 20)
+        pady = kwargs.pop("pady", 10)
+        font = kwargs.pop("font", ("Segoe UI", 10, "bold"))
         
         super().__init__(
             parent,
@@ -200,16 +224,25 @@ class PinterestCrawlerApp:
     
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Pinterest 高清图片爬取工具 🎨")
+        self.root.title("Pinterest 高清图片爬取工具")
         self.root.geometry("1100x780")
         self.root.minsize(900, 650)
         self.root.configure(bg=THEME["bg_dark"])
-        
-        # 设置图标
+
+        # ── 设置窗口图标（任务栏 + 标题栏）──
+        self._icon_path = resource_path("log.ico")
+        self._pil_icon = None
+        self._tray_icon = None
         try:
-            self.root.iconbitmap(default="")
+            if os.path.exists(self._icon_path):
+                self.root.iconbitmap(self._icon_path)
         except Exception:
             pass
+        # 加载 PIL 图像，供系统托盘使用
+        try:
+            self._pil_icon = PILImage.open(self._icon_path)
+        except Exception:
+            self._pil_icon = None
         
         # 状态变量
         self.crawler: PinterestCrawlerApp = None
@@ -794,17 +827,61 @@ class PinterestCrawlerApp:
     def run(self):
         """运行应用"""
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        # 启动系统托盘图标（后台线程）
+        self._start_tray()
         self.root.mainloop()
-    
+
+    # ── 系统托盘 ──────────────────────────────
+    def _start_tray(self):
+        """在后台线程启动系统托盘图标"""
+        if not TRAY_AVAILABLE or self._pil_icon is None:
+            return
+        try:
+            menu = pystray.Menu(
+                TrayItem("显示主窗口", self._tray_show, default=True),
+                pystray.Menu.SEPARATOR,
+                TrayItem("开始爬取", lambda icon, item: self.root.after(0, self._start_crawl)),
+                TrayItem("停止爬取", lambda icon, item: self.root.after(0, self._stop_crawl)),
+                pystray.Menu.SEPARATOR,
+                TrayItem("退出程序", self._tray_quit),
+            )
+            self._tray_icon = pystray.Icon(
+                "PinterestCrawler",
+                self._pil_icon,
+                "Pinterest 爬取工具",
+                menu,
+            )
+            tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
+            tray_thread.start()
+        except Exception:
+            pass
+
+    def _tray_show(self, icon=None, item=None):
+        """从托盘恢复显示窗口"""
+        self.root.after(0, self.root.deiconify)
+        self.root.after(0, self.root.lift)
+
+    def _tray_quit(self, icon=None, item=None):
+        """从托盘退出程序"""
+        if self._tray_icon:
+            self._tray_icon.stop()
+        self.root.after(0, self.root.destroy)
+
+    # ── 关闭处理 ──────────────────────────────
     def _on_close(self):
-        """关闭处理"""
-        if self.is_running:
-            if messagebox.askyesno("确认退出", "爬取任务正在进行中！\n确定要退出吗？"):
-                if self.crawler:
-                    self.crawler.stop()
-                self.root.destroy()
+        """点击 X 时最小化到托盘，而不是直接退出"""
+        if TRAY_AVAILABLE and self._tray_icon:
+            # 隐藏窗口，继续在托盘运行
+            self.root.withdraw()
         else:
-            self.root.destroy()
+            # 无托盘时直接询问退出
+            if self.is_running:
+                if messagebox.askyesno("确认退出", "爬取任务正在进行中！\n确定要退出吗？"):
+                    if self.crawler:
+                        self.crawler.stop()
+                    self.root.destroy()
+            else:
+                self.root.destroy()
 
 
 # ─────────────────────────────────────────────

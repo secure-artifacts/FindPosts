@@ -2,7 +2,11 @@
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
+
+# PyInstaller 构建产物（不提交到 git，通过 CI 自动构建）
+build/
+dist/
+*.spec
 .Python
 build/
 develop-eggs/
