@@ -55,8 +55,11 @@ jobs:
 
       - name: Build Windows Installer
         run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          & $iscc installer.iss
+          Write-Host "Building installer version: $version"
+          & $iscc /DMyAppVersion="$version" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dir installer_output\
 
       - name: Generate artifact attestation (portable exe)
