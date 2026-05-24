@@ -31,8 +31,11 @@ jobs:
 
       - name: Build executable with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "PinterestCrawler" `
-            --icon="log.ico" `
+          pyinstaller `
+            --onefile `
+            --windowed `
+            --name PinterestCrawler `
+            --icon log.ico `
             --add-data "log.ico;." `
             --add-data "pinterest_crawler.py;." `
             --hidden-import selenium `
@@ -40,7 +43,6 @@ jobs:
             --hidden-import webdriver_manager.chrome `
             --hidden-import requests `
             --hidden-import pystray `
-            --hidden-import "pystray._win32" `
             --hidden-import PIL `
             --hidden-import PIL.Image `
             --hidden-import PIL.IcoImagePlugin `
