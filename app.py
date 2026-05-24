@@ -6,6 +6,7 @@ v1.0.0
 
 import os
 import sys
+import ctypes
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -34,6 +35,36 @@ def resource_path(relative_path: str) -> str:
         base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, relative_path)
 
+
+def ensure_single_instance():
+    """
+    单实例锁：使用 Windows 命名 Mutex。
+    若已有实例运行，将其窗口置前并返回 False。
+    """
+    MUTEX_NAME = "Global\\PinterestCrawler_SingleInstanceMutex"
+    WINDOW_TITLE = "Pinterest 高清图片爬取工具"
+    ERROR_ALREADY_EXISTS = 183
+
+    try:
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        err   = ctypes.windll.kernel32.GetLastError()
+    except Exception:
+        return True  # 非 Windows 环境，跳过检测
+
+    if err == ERROR_ALREADY_EXISTS:
+        # 已有实例运行 → 找到其窗口并将其置前
+        try:
+            user32 = ctypes.windll.user32
+            hwnd   = user32.FindWindowW(None, WINDOW_TITLE)
+            if hwnd:
+                SW_RESTORE = 9
+                user32.ShowWindow(hwnd, SW_RESTORE)   # 如果最小化则还原
+                user32.SetForegroundWindow(hwnd)       # 置前
+        except Exception:
+            pass
+        return False   # 返回 False 表示应退出
+
+    return True        # 返回 True 表示是第一个实例
 
 # ─────────────────────────────────────────────
 # 颜色主题
@@ -395,30 +426,101 @@ class PinterestCrawlerApp:
     
     def _build_ui(self):
         """构建主界面"""
-        # 顶部标题栏
         self._build_header()
-        
-        # 主内容区（左右布局）
+
         main_frame = tk.Frame(self.root, bg=THEME["bg_dark"])
         main_frame.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-        
-        # 左侧配置区
-        left_frame = tk.Frame(main_frame, bg=THEME["bg_dark"])
-        left_frame.pack(side="left", fill="both", expand=False, padx=(0, 8))
-        left_frame.config(width=380)
-        left_frame.pack_propagate(False)
-        
-        self._build_config_panel(left_frame)
-        
-        # 右侧日志区
+
+        # ── 左侧配置区 ──
+        left_outer = tk.Frame(main_frame, bg=THEME["bg_dark"], width=388)
+        left_outer.pack(side="left", fill="both", expand=False, padx=(0, 8))
+        left_outer.pack_propagate(False)
+
+        # 操作按钮栏——先 pack(side="bottom") 保证永远可见
+        btn_bar = tk.Frame(left_outer, bg=THEME["bg_card"],
+                           highlightthickness=2,
+                           highlightbackground=THEME["accent"])
+        btn_bar.pack(side="bottom", fill="x", pady=(6, 0))
+
+        btn_inner = tk.Frame(btn_bar, bg=THEME["bg_card"])
+        btn_inner.pack(fill="x", padx=12, pady=10)
+
+        self.start_btn = ModernButton(
+            btn_inner, "🚀  开始爬取", command=self._start_crawl,
+            style="primary", padx=24, pady=10,
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.start_btn.pack(side="left", padx=(0, 8))
+
+        self.stop_btn = ModernButton(
+            btn_inner, "⏹ 停止", command=self._stop_crawl,
+            style="secondary", padx=16, pady=10,
+        )
+        self.stop_btn.pack(side="left", padx=(0, 8))
+        self.stop_btn.config(state="disabled")
+
+        ModernButton(
+            btn_inner, "📂 打开目录", command=self._open_save_dir,
+            style="purple", padx=16, pady=10,
+        ).pack(side="right")
+
+        # 可滚动画布区域（占剩余空间）
+        scroll_canvas = tk.Canvas(
+            left_outer, bg=THEME["bg_dark"],
+            highlightthickness=0, bd=0,
+        )
+        # 纺向滚动条（内容超出时自动出现）
+        v_scroll = tk.Scrollbar(
+            left_outer, orient="vertical",
+            command=scroll_canvas.yview,
+        )
+        scroll_canvas.configure(yscrollcommand=v_scroll.set)
+
+        # 内容框
+        config_frame = tk.Frame(scroll_canvas, bg=THEME["bg_dark"])
+        cfg_win = scroll_canvas.create_window(
+            (0, 0), window=config_frame, anchor="nw",
+        )
+
+        def _sync_width(event):
+            """ 内容宽度和画布保持一致 """
+            scroll_canvas.itemconfig(cfg_win, width=event.width)
+
+        def _sync_scrollregion(event):
+            """ 内容变化时更新滚动区域 """
+            scroll_canvas.configure(
+                scrollregion=scroll_canvas.bbox("all")
+            )
+
+        scroll_canvas.bind("<Configure>", _sync_width)
+        config_frame.bind("<Configure>", _sync_scrollregion)
+
+        # 鼠标滚轮（小鼠进入左侧区域时激活，离开时取消）
+        def _on_wheel(event):
+            scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        def _bind_wheel(event):   scroll_canvas.bind_all("<MouseWheel>", _on_wheel)
+        def _unbind_wheel(event): scroll_canvas.unbind_all("<MouseWheel>")
+
+        scroll_canvas.bind("<Enter>", _bind_wheel)
+        scroll_canvas.bind("<Leave>", _unbind_wheel)
+        config_frame.bind("<Enter>", _bind_wheel)
+        config_frame.bind("<Leave>", _unbind_wheel)
+
+        scroll_canvas.pack(side="left", fill="both", expand=True)
+        # 滚动条只在需要时显示（不占用宽度）
+        # v_scroll.pack(side="right", fill="y")  # 可选开启
+
+        # 将配置内容构建到滚动画布内的 config_frame
+        self._build_config_panel(config_frame)
+
+        # ── 右侧日志区 ──
         right_frame = tk.Frame(main_frame, bg=THEME["bg_dark"])
         right_frame.pack(side="left", fill="both", expand=True)
-        
         self._build_log_panel(right_frame)
-        
-        # 底部状态栏
+
         self._build_status_bar()
-    
+
     def _build_header(self):
         """构建顶部标题栏"""
         header = tk.Frame(self.root, bg=THEME["bg_panel"], height=70)
@@ -509,36 +611,7 @@ class PinterestCrawlerApp:
         )
     
     def _build_config_panel(self, parent):
-        """构建左侧配置面板"""
-
-        # ── 操作按钮（先占底部，永远可见）──
-        btn_card = tk.Frame(parent, bg=THEME["bg_card"],
-                            highlightthickness=2,
-                            highlightbackground=THEME["accent"])
-        btn_card.pack(side="bottom", fill="x", pady=(8, 0))
-
-        btn_inner = tk.Frame(btn_card, bg=THEME["bg_card"])
-        btn_inner.pack(fill="x", padx=12, pady=10)
-
-        self.start_btn = ModernButton(
-            btn_inner, "🚀  开始爬取", command=self._start_crawl,
-            style="primary", padx=24, pady=10,
-            font=("Segoe UI", 11, "bold"),
-        )
-        self.start_btn.pack(side="left", padx=(0, 8))
-
-        self.stop_btn = ModernButton(
-            btn_inner, "⏹ 停止", command=self._stop_crawl,
-            style="secondary", padx=16, pady=10,
-        )
-        self.stop_btn.pack(side="left", padx=(0, 8))
-        self.stop_btn.config(state="disabled")
-
-        open_btn = ModernButton(
-            btn_inner, "📂 打开目录", command=self._open_save_dir,
-            style="purple", padx=16, pady=10,
-        )
-        open_btn.pack(side="right")
+        """构建左侧配置面板（内容部分，按钮栏已在 _build_ui 中单独构建）"""
 
         # ── 储存路径 ──
         path_card = self._card(parent)
@@ -995,5 +1068,7 @@ class PinterestCrawlerApp:
 # 入口
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
+    if not ensure_single_instance():
+        sys.exit(0)          # 已有实例运行，将其置前后退出
     app = PinterestCrawlerApp()
     app.run()
