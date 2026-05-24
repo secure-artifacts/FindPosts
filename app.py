@@ -171,11 +171,11 @@ class ModernSlider(tk.Frame):
                 self.PAD, cy - tr, tx, cy + tr,
                 fill=THEME["accent"], outline="",
             )
-        # 滑块阴影
+        # 滑块阴影（用 stipple 模拟半透明，Tkinter 不支持 8 位 hex alpha）
         r = self.THUMB_R
         c.create_oval(
             tx - r + 2, cy - r + 2, tx + r + 2, cy + r + 2,
-            fill="#00000055", outline="",
+            fill="#0A0A18", outline="", stipple="gray25",
         )
         # 滑块本体（白色 + 红色边框）
         c.create_oval(
