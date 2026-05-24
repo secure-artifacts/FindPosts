@@ -35,6 +35,12 @@ try:
 except ImportError:
     WEBDRIVER_MANAGER = False
 
+try:
+    import undetected_chromedriver as uc
+    UC_AVAILABLE = True
+except ImportError:
+    UC_AVAILABLE = False
+
 # ─────────────────────────────────────────────
 # 日志配置
 # ─────────────────────────────────────────────
@@ -269,33 +275,46 @@ class PinterestCrawler:
         return batch_dir
     
     def _init_driver(self) -> webdriver.Chrome:
-        """初始化 Chrome 浏览器（加强反检测）"""
+        """初始化 Chrome 浏览器（优先使用 undetected-chromedriver 规避检测）"""
         self._emit_log("🚀 正在启动浏览器...")
 
+        # ── 公共 Chrome 参数 ──
+        common_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--window-size=1920,1080",
+            "--lang=zh-CN,zh;q=0.9",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-notifications",
+        ]
+
+        # ── 优先使用 undetected_chromedriver ──
+        if UC_AVAILABLE:
+            try:
+                options = uc.ChromeOptions()
+                for arg in common_args:
+                    options.add_argument(arg)
+                driver = uc.Chrome(options=options, headless=True, use_subprocess=True)
+                self._emit_log("✅ 浏览器启动成功（undetected 模式）")
+                return driver
+            except Exception as e:
+                self._emit_log(f"⚠️ undetected 模式失败，切换普通模式: {e}", "WARNING")
+
+        # ── 普通 Selenium 回退 ──
         options = Options()
-        # 使用旧版 headless 兼容性更好
         options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-        options.add_argument("--start-maximized")
-        options.add_argument("--lang=en-US,en;q=0.9")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-extensions")
-        options.add_argument("--disable-infobars")
-        options.add_argument("--disable-notifications")
-        options.add_argument("--ignore-certificate-errors")
-        options.add_argument("--allow-running-insecure-content")
-        options.add_argument("--disable-web-security")
-        options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+        for arg in common_args:
+            options.add_argument(arg)
+        options.add_experimental_option(
+            "excludeSwitches", ["enable-automation", "enable-logging"]
+        )
         options.add_experimental_option("useAutomationExtension", False)
         options.add_argument(
             "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         )
-        # 启用图片加载（默认已启用，确认不被禁用）
         prefs = {
             "profile.managed_default_content_settings.images": 1,
             "profile.default_content_setting_values.notifications": 2,
@@ -309,19 +328,16 @@ class PinterestCrawler:
             else:
                 driver = webdriver.Chrome(options=options)
 
-            # 隐藏 webdriver 特征
             driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
                 "source": """
                     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
                     Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN','zh']});
                     window.chrome = { runtime: {} };
                 """
             })
-
             self._emit_log("✅ 浏览器启动成功")
             return driver
-
         except WebDriverException as e:
             self._emit_log(f"❌ 浏览器启动失败: {e}", "ERROR")
             raise
@@ -452,54 +468,88 @@ class PinterestCrawler:
         self._emit_log(f"📸 当前页面找到 {len(results)} 张图片")
         return results[:max_count]
 
-    def _get_related_pins(self, pin_url: str, max_count: int) -> List[dict]:
-        """进入Pin详情页，获取'More like this'相关图片（JS提取）"""
+    def _extract_page_keywords(self) -> str:
+        """从当前页面标题提取关键词，用于搜索相关内容"""
         try:
-            # 规范化域名
+            title = self.driver.title
+            # 去掉 Pinterest 标准后缀
+            title = re.sub(r'\s*[-–|]\s*Pinterest.*$', '', title, flags=re.IGNORECASE).strip()
+            # 去掉 "Pin en/on/de" 前缀
+            title = re.sub(r'^Pin\s+(en|on|de|in|su|vom|van|sur)\s+', '', title, flags=re.IGNORECASE).strip()
+            if title and len(title) > 2:
+                self._emit_log(f"🔑 提取关键词: {title}")
+                return title
+        except Exception:
+            pass
+        return ""
+
+    def _search_for_images(self, keyword: str, max_count: int) -> List[dict]:
+        """用关键词搜索 Pinterest 图片（不需要登录）"""
+        search_url = self.PINTEREST_SEARCH_URL.format(query=quote(keyword))
+        self._emit_log(f"🔎 关键词搜索: {keyword}")
+        try:
+            self.driver.get(search_url)
+            random_sleep(3.0, 5.0)
+            self._wait_for_images()
+            human_scroll(self.driver, scroll_count=4)
+            random_sleep(2.0, 3.0)
+            results = self._extract_image_urls_from_page(max_count)
+            self._emit_log(f"📸 搜索结果: {len(results)} 张")
+            return results
+        except Exception as e:
+            self._emit_log(f"❌ 关键词搜索失败: {e}", "ERROR")
+            return []
+
+    def _get_related_pins(self, pin_url: str, max_count: int) -> List[dict]:
+        """获取相关图片：先尝试 More Like This，失败则改用关键词搜索"""
+        try:
             pin_url = normalize_pinterest_url(pin_url)
             self._emit_log(f"🔍 访问Pin详情页: {pin_url}")
             self.driver.get(pin_url)
-            random_sleep(3.0, 5.0)
+            random_sleep(3.5, 5.5)
             self._wait_for_images()
 
-            # 多次滚动，加载 'More like this'
-            human_scroll(self.driver, scroll_count=4)
-            random_sleep(2.0, 3.5)
+            # 多次滚动，给 More Like This 足够时间加载
+            for _ in range(3):
+                human_scroll(self.driver, scroll_count=3)
+                random_sleep(1.5, 2.5)
 
-            # 用 JS 提取相关图片
-            related_results = []
-            seen_urls: Set[str] = set()
-            scroll_attempts = 0
-            max_scroll = max(6, max_count // 2)
+            # JS 提取相关图片
             current_pin_id = extract_pin_id(pin_url)
+            seen_urls: Set[str] = set()
+            related_results = []
 
-            while len(related_results) < max_count and scroll_attempts < max_scroll:
+            for _ in range(3):  # 最多尝试 3 轮滚动+提取
                 if self.stop_event.is_set():
                     break
+                raw = self.driver.execute_script(self._JS_EXTRACT, max_count * 4) or []
+                for item in raw:
+                    if len(related_results) >= max_count:
+                        break
+                    img_url = upgrade_image_url(item.get("img_url", ""))
+                    rel_url = normalize_pinterest_url(item.get("pin_url", ""))
+                    if extract_pin_id(rel_url) == current_pin_id:
+                        continue
+                    if img_url and rel_url and img_url not in seen_urls:
+                        seen_urls.add(img_url)
+                        related_results.append({"img_url": img_url, "pin_url": rel_url})
+                if len(related_results) >= max_count:
+                    break
+                human_scroll(self.driver, scroll_count=2)
+                random_sleep(1.5, 2.5)
 
-                try:
-                    raw = self.driver.execute_script(self._JS_EXTRACT, max_count * 3)
-                    for item in (raw or []):
-                        if len(related_results) >= max_count:
-                            break
-                        img_url = upgrade_image_url(item.get("img_url", ""))
-                        rel_pin_url = normalize_pinterest_url(item.get("pin_url", ""))
-                        # 排除当前 Pin 自身
-                        if extract_pin_id(rel_pin_url) == current_pin_id:
-                            continue
-                        if img_url and rel_pin_url and img_url not in seen_urls:
-                            seen_urls.add(img_url)
-                            related_results.append({"img_url": img_url, "pin_url": rel_pin_url})
-                except Exception as e:
-                    self.logger.debug(f"JS提取相关图片出错: {e}")
+            if related_results:
+                self._emit_log(f"🔗 找到 {len(related_results)} 张相关图片")
+                return related_results[:max_count]
 
-                if len(related_results) < max_count:
-                    human_scroll(self.driver, scroll_count=2)
-                    scroll_attempts += 1
-                    random_sleep(1.5, 3.0)
+            # ── 相关图片为 0 → 改用关键词搜索（无需登录）──
+            self._emit_log("🔄 More Like This 未加载，改用关键词搜索...")
+            keyword = self._extract_page_keywords()
+            if keyword:
+                return self._search_for_images(keyword, max_count)
 
-            self._emit_log(f"🔗 找到 {len(related_results)} 张相关图片")
-            return related_results[:max_count]
+            self._emit_log("⚠️ 无法获取关键词，跳过该Pin的延伸层", "WARNING")
+            return []
 
         except Exception as e:
             self._emit_log(f"❌ 获取相关图片失败: {e}", "ERROR")
