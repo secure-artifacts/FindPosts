@@ -105,6 +105,100 @@ class ModernButton(tk.Button):
         self.bind("<Leave>", lambda e: self.config(bg=self._bg))
 
 
+class ModernSlider(tk.Frame):
+    """Canvas 自绘现代滑块 — 高对比度、可视性强"""
+
+    TRACK_H = 8    # 轨道高度 px
+    THUMB_R = 11   # 滑块圆半径 px
+    PAD    = 14    # 左右边距
+
+    def __init__(self, parent, variable, from_=0, to=100, resolution=1, **kwargs):
+        super().__init__(parent, bg=THEME["bg_card"], **kwargs)
+        self._var       = variable
+        self._from      = from_
+        self._to        = to
+        self._res       = resolution
+        self._dragging  = False
+
+        self._canvas = tk.Canvas(
+            self,
+            height=self.THUMB_R * 2 + 8,
+            bg=THEME["bg_card"],
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        self._canvas.pack(fill="x", expand=True, pady=4)
+
+        self._canvas.bind("<Configure>",      lambda e: self._redraw())
+        self._canvas.bind("<ButtonPress-1>",  self._on_press)
+        self._canvas.bind("<B1-Motion>",      self._on_drag)
+        self._canvas.bind("<ButtonRelease-1>",self._on_release)
+        self._var.trace_add("write",          lambda *_: self._redraw())
+
+    # 将数局转成 canvas x 坐标
+    def _val_to_x(self, val, w):
+        frac = (val - self._from) / max(self._to - self._from, 1)
+        return self.PAD + frac * (w - self.PAD * 2)
+
+    # 将 canvas x 转成数局，并 snap 到 resolution
+    def _x_to_val(self, x, w):
+        frac = (x - self.PAD) / max(w - self.PAD * 2, 1)
+        frac = max(0.0, min(1.0, frac))
+        raw  = self._from + frac * (self._to - self._from)
+        snapped = round(raw / self._res) * self._res
+        return int(max(self._from, min(self._to, snapped)))
+
+    def _redraw(self):
+        c = self._canvas
+        c.delete("all")
+        w = c.winfo_width()
+        if w < 2:
+            return
+        h  = c.winfo_height()
+        cy = h // 2
+        tr = self.TRACK_H // 2
+        val = self._var.get()
+        tx  = self._val_to_x(val, w)
+
+        # 轨道底色（深色背景）
+        c.create_rectangle(
+            self.PAD, cy - tr, w - self.PAD, cy + tr,
+            fill="#0A0A18", outline=THEME["border"], width=1,
+        )
+        # 已填充部分（酷红渐变）
+        if tx > self.PAD:
+            c.create_rectangle(
+                self.PAD, cy - tr, tx, cy + tr,
+                fill=THEME["accent"], outline="",
+            )
+        # 滑块阴影
+        r = self.THUMB_R
+        c.create_oval(
+            tx - r + 2, cy - r + 2, tx + r + 2, cy + r + 2,
+            fill="#00000055", outline="",
+        )
+        # 滑块本体（白色 + 红色边框）
+        c.create_oval(
+            tx - r, cy - r, tx + r, cy + r,
+            fill="#FFFFFF", outline=THEME["accent"], width=2,
+        )
+
+    def _on_press(self, e):
+        self._dragging = True
+        self._set_from_x(e.x)
+
+    def _on_drag(self, e):
+        if self._dragging:
+            self._set_from_x(e.x)
+
+    def _on_release(self, e):
+        self._dragging = False
+
+    def _set_from_x(self, x):
+        w = self._canvas.winfo_width()
+        self._var.set(self._x_to_val(x, w))
+
+
 class ModernEntry(tk.Entry):
     """现代化输入框"""
     
@@ -563,61 +657,69 @@ class PinterestCrawlerApp:
         open_btn.pack(side="right")
     
     def _build_slider_row(self, parent, label, var, min_val, max_val, step, unit="", hint=""):
-        """构建滑块行"""
-        row = tk.Frame(parent, bg=THEME["bg_card"])
-        row.pack(fill="x", pady=6)
-        
-        label_frame = tk.Frame(row, bg=THEME["bg_card"])
-        label_frame.pack(fill="x")
-        
-        self._label(label_frame, label, font=("Segoe UI", 10)).pack(side="left")
-        
-        self.value_label = tk.Label(
-            label_frame,
-            textvariable=var,
-            font=("Segoe UI", 11, "bold"),
-            bg=THEME["bg_card"],
-            fg=THEME["accent"],
-        )
-        self.value_label.pack(side="left", padx=6)
-        
+        """构建滑块行 — 现代布局 + Canvas 自绘滑块"""
+        outer = tk.Frame(parent, bg=THEME["bg_card"],
+                         highlightthickness=1,
+                         highlightbackground=THEME["border"])
+        outer.pack(fill="x", pady=(0, 8), ipady=6)
+
+        inner = tk.Frame(outer, bg=THEME["bg_card"])
+        inner.pack(fill="x", padx=12)
+
+        # ── 标签行：名称 + 数局显示 + 单位 + 加减按鈕 ──
+        top = tk.Frame(inner, bg=THEME["bg_card"])
+        top.pack(fill="x", pady=(4, 0))
+
+        tk.Label(top, text=label,
+                 bg=THEME["bg_card"], fg=THEME["text_secondary"],
+                 font=("Segoe UI", 10)).pack(side="left")
+
+        # 数值显示区域
+        val_badge = tk.Frame(top, bg=THEME["bg_input"],
+                             highlightthickness=1,
+                             highlightbackground=THEME["border"])
+        val_badge.pack(side="left", padx=10)
+
+        tk.Label(val_badge, textvariable=var,
+                 bg=THEME["bg_input"], fg=THEME["accent_glow"],
+                 font=("Segoe UI", 13, "bold"),
+                 width=3, anchor="center").pack(padx=8, pady=1)
+
         if unit:
-            self._label(label_frame, unit, fg=THEME["text_muted"]).pack(side="left")
-        
-        # 创建标签动态更新
-        value_lbl = tk.Label(
-            label_frame,
-            textvariable=var,
-            font=("Segoe UI", 11, "bold"),
-            bg=THEME["bg_card"],
-            fg=THEME["accent"],
-        )
-        # 移除之前的重复label，直接更新
-        
-        slider_frame = tk.Frame(row, bg=THEME["bg_card"])
-        slider_frame.pack(fill="x", pady=(4, 0))
-        
-        slider = tk.Scale(
-            slider_frame,
-            variable=var,
-            from_=min_val,
-            to=max_val,
-            resolution=step,
-            orient="horizontal",
-            bg=THEME["bg_card"],
-            fg=THEME["text_secondary"],
-            troughcolor=THEME["bg_input"],
-            activebackground=THEME["accent"],
-            highlightthickness=0,
-            bd=0,
-            sliderlength=20,
-            sliderrelief="flat",
-            showvalue=False,
-        )
-        slider.pack(fill="x")
-        
+            tk.Label(top, text=unit,
+                     bg=THEME["bg_card"], fg=THEME["text_muted"],
+                     font=("Segoe UI", 9)).pack(side="left")
+
+        # 加减按鈕
+        def dec(): var.set(max(min_val, var.get() - step))
+        def inc(): var.set(min(max_val, var.get() + step))
+
+        btn_cfg = dict(bg=THEME["bg_hover"], fg=THEME["text_primary"],
+                       relief="flat", bd=0, cursor="hand2",
+                       font=("Segoe UI", 12, "bold"), width=2)
+        tk.Button(top, text="−", command=dec, **btn_cfg).pack(side="right", padx=(4, 0))
+        tk.Button(top, text="+", command=inc, **btn_cfg).pack(side="right", padx=(8, 0))
+
+        # ── Canvas 滑块 ──
+        ModernSlider(
+            inner, variable=var,
+            from_=min_val, to=max_val, resolution=step,
+        ).pack(fill="x", pady=(4, 2))
+
+        # ── 最小/最大标注 ──
+        range_row = tk.Frame(inner, bg=THEME["bg_card"])
+        range_row.pack(fill="x")
+        tk.Label(range_row, text=str(min_val),
+                 bg=THEME["bg_card"], fg=THEME["text_muted"],
+                 font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(range_row, text=str(max_val),
+                 bg=THEME["bg_card"], fg=THEME["text_muted"],
+                 font=("Segoe UI", 8)).pack(side="right")
+
         if hint:
-            self._label(row, hint, fg=THEME["text_muted"], font=("Segoe UI", 8)).pack(anchor="w")
+            tk.Label(inner, text=hint,
+                     bg=THEME["bg_card"], fg=THEME["text_muted"],
+                     font=("Segoe UI", 8)).pack(anchor="w", pady=(2, 0))
     
     def _build_log_panel(self, parent):
         """构建右侧日志面板"""
