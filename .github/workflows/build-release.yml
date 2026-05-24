@@ -11,7 +11,10 @@ permissions:
   attestations: write
 
 jobs:
-  build:
+  # ──────────────────────────────────────────
+  # Windows: 构建 exe + Inno Setup 安装包
+  # ──────────────────────────────────────────
+  build-windows:
     runs-on: windows-latest
 
     steps:
@@ -78,34 +81,121 @@ jobs:
           files: |
             installer_output/PinterestCrawler_Setup_*.exe
             dist/PinterestCrawler.exe
-          generate_release_notes: true
+          generate_release_notes: false
           draft: false
           prerelease: false
           body: |
             ## Pinterest 高清图片爬取工具 ${{ github.ref_name }}
 
-            ### 📦 两种下载方式
+            ### 📦 下载选择
 
-            | 文件 | 说明 | 推荐 |
+            | 平台 | 文件 | 说明 |
             |------|------|------|
-            | `PinterestCrawler_Setup_*.exe` | **安装程序** — 有开始菜单、桌面图标、卸载程序 | ✅ 推荐 |
-            | `PinterestCrawler.exe` | 便携版 — 单文件，双击即用 | 备用 |
-
-            ### 安装步骤（安装程序版）
-            1. 下载 `PinterestCrawler_Setup_*.exe`
-            2. 双击安装，按向导操作
-            3. 从开始菜单或桌面快捷方式启动
+            | 🪟 Windows | `PinterestCrawler_Setup_*.exe` | **安装程序**（推荐）— 开始菜单 + 卸载支持 |
+            | 🪟 Windows | `PinterestCrawler.exe` | 便携版 — 单文件直接运行 |
+            | 🍎 macOS | `PinterestCrawler_Mac_*.dmg` | **DMG 安装包**（macOS 10.14+） |
 
             ### 功能
             - 支持关键词 / Pinterest 链接两种爬取模式
             - 分层爬取（第一层最相关 + 延申扩展）
             - 高清原图自动升级（originals/736x）
             - 系统托盘图标（最小化后继续运行）
-            - 现代深色主题 UI
+            - 单实例保护（已运行时不会重复打开）
+            - 现代深色主题 UI，左侧面板可滚动
 
             ### 系统要求
-            - Windows 10/11 (64位)
-            - Google Chrome 浏览器
-            - 网络连接（可访问 Pinterest）
+            - **Windows**: Windows 10/11 (64位) + Google Chrome
+            - **macOS**: macOS 10.14 Mojave+ (64位) + Google Chrome
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ──────────────────────────────────────────
+  # macOS: 构建 .app + DMG 安装包
+  # ──────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    needs: build-windows   # 等 Windows 先创建 Release，再上传 macOS 文件
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Convert log.ico to log.icns (macOS icon format)
+        run: |
+          python -c "
+          from PIL import Image
+          import os, subprocess
+
+          img = Image.open('log.ico').convert('RGBA')
+          iconset = 'PinterestCrawler.iconset'
+          os.makedirs(iconset, exist_ok=True)
+
+          sizes = [16, 32, 64, 128, 256, 512]
+          for s in sizes:
+              r = img.resize((s, s), Image.LANCZOS)
+              r.save(f'{iconset}/icon_{s}x{s}.png')
+              r2 = img.resize((s*2, s*2), Image.LANCZOS)
+              r2.save(f'{iconset}/icon_{s}x{s}@2x.png')
+
+          print('Iconset created, running iconutil...')
+          "
+          iconutil -c icns PinterestCrawler.iconset -o log.icns
+          ls -lh log.icns
+
+      - name: Build .app bundle with PyInstaller
+        run: |
+          pyinstaller \
+            --windowed \
+            --name PinterestCrawler \
+            --icon log.icns \
+            --add-data "log.ico:." \
+            --add-data "log.icns:." \
+            --add-data "pinterest_crawler.py:." \
+            --collect-all selenium \
+            --collect-all webdriver_manager \
+            --collect-all requests \
+            --hidden-import pystray \
+            --hidden-import PIL \
+            --hidden-import PIL.Image \
+            --hidden-import PIL.IcoImagePlugin \
+            app.py
+          ls -lh dist/
+
+      - name: Create DMG installer
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          DMG_NAME="PinterestCrawler_Mac_${VERSION}.dmg"
+
+          # 使用 hdiutil 创建 DMG（macOS 内置工具）
+          hdiutil create \
+            -volname "Pinterest 爬取工具 ${VERSION}" \
+            -srcfolder "dist/PinterestCrawler.app" \
+            -ov \
+            -format UDZO \
+            "${DMG_NAME}"
+
+          ls -lh "${DMG_NAME}"
+          echo "DMG_NAME=${DMG_NAME}" >> $GITHUB_ENV
+
+      - name: Generate artifact attestation (macOS DMG)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.DMG_NAME }}
+
+      - name: Upload macOS DMG to existing Release
+        run: |
+          gh release upload "${{ github.ref_name }}" "${{ env.DMG_NAME }}" --clobber
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

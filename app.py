@@ -6,7 +6,8 @@ v1.0.0
 
 import os
 import sys
-import ctypes
+import socket
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
@@ -36,35 +37,65 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base, relative_path)
 
 
+# 单实例锁：保留全局引用，防止被 GC
+_single_instance_sock = None
+
+
 def ensure_single_instance():
     """
-    单实例锁：使用 Windows 命名 Mutex。
-    若已有实例运行，将其窗口置前并返回 False。
+    单实例锁 — 跨平台实现。
+    Windows : 使用系统命名 Mutex，已运行则将其窗口置前。
+    macOS/Linux : 使用本地 TCP socket 端口锁。
+    返回 True 表示可以继续启动，返回 False 应退出。
     """
-    MUTEX_NAME = "Global\\PinterestCrawler_SingleInstanceMutex"
-    WINDOW_TITLE = "Pinterest 高清图片爬取工具"
-    ERROR_ALREADY_EXISTS = 183
+    global _single_instance_sock
 
-    try:
-        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
-        err   = ctypes.windll.kernel32.GetLastError()
-    except Exception:
-        return True  # 非 Windows 环境，跳过检测
-
-    if err == ERROR_ALREADY_EXISTS:
-        # 已有实例运行 → 找到其窗口并将其置前
+    if sys.platform == "win32":
+        # ── Windows: 命名 Mutex ──
         try:
-            user32 = ctypes.windll.user32
-            hwnd   = user32.FindWindowW(None, WINDOW_TITLE)
-            if hwnd:
-                SW_RESTORE = 9
-                user32.ShowWindow(hwnd, SW_RESTORE)   # 如果最小化则还原
-                user32.SetForegroundWindow(hwnd)       # 置前
+            import ctypes
+            MUTEX_NAME = "Global\\PinterestCrawler_SingleInstanceMutex"
+            WINDOW_TITLE = "Pinterest 高清图片爬取工具"
+            mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+            err   = ctypes.windll.kernel32.GetLastError()
         except Exception:
-            pass
-        return False   # 返回 False 表示应退出
+            return True
 
-    return True        # 返回 True 表示是第一个实例
+        if err == 183:  # ERROR_ALREADY_EXISTS
+            try:
+                user32 = ctypes.windll.user32
+                hwnd   = user32.FindWindowW(None, WINDOW_TITLE)
+                if hwnd:
+                    user32.ShowWindow(hwnd, 9)      # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd) # 置前
+            except Exception:
+                pass
+            return False
+        return True
+
+    else:
+        # ── macOS / Linux: TCP socket 锁 ──
+        PORT = 47832
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            sock.bind(("127.0.0.1", PORT))
+            sock.listen(1)
+            _single_instance_sock = sock  # 防止 GC
+            return True
+        except OSError:
+            # 端口已被占用 → 已有实例运行
+            if sys.platform == "darwin":
+                # macOS: 通过 open 命令激活已有窗口
+                try:
+                    subprocess.run(
+                        ["osascript", "-e",
+                         'tell application "PinterestCrawler" to activate'],
+                        timeout=2,
+                    )
+                except Exception:
+                    pass
+            return False
 
 # ─────────────────────────────────────────────
 # 颜色主题
@@ -891,12 +922,17 @@ class PinterestCrawlerApp:
         self.keyword_text.config(fg=THEME["text_primary"])
     
     def _open_save_dir(self):
-        """打开保存目录"""
+        """打开保存目录（跨平台）"""
         path = self.save_path_var.get()
         if os.path.exists(path):
-            os.startfile(path)
+            if sys.platform == "win32":
+                os.startfile(path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", path])
+            else:
+                subprocess.run(["xdg-open", path])
         else:
-            messagebox.showinfo("提示", f"目录尚未创建:\n{path}")
+            messagebox.showinfo("提示", f"目录尚未创建：\n{path}")
     
     def _get_tasks(self):
         """获取任务列表"""
