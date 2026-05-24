@@ -510,6 +510,36 @@ class PinterestCrawlerApp:
     
     def _build_config_panel(self, parent):
         """构建左侧配置面板"""
+
+        # ── 操作按钮（先占底部，永远可见）──
+        btn_card = tk.Frame(parent, bg=THEME["bg_card"],
+                            highlightthickness=2,
+                            highlightbackground=THEME["accent"])
+        btn_card.pack(side="bottom", fill="x", pady=(8, 0))
+
+        btn_inner = tk.Frame(btn_card, bg=THEME["bg_card"])
+        btn_inner.pack(fill="x", padx=12, pady=10)
+
+        self.start_btn = ModernButton(
+            btn_inner, "🚀  开始爬取", command=self._start_crawl,
+            style="primary", padx=24, pady=10,
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.start_btn.pack(side="left", padx=(0, 8))
+
+        self.stop_btn = ModernButton(
+            btn_inner, "⏹ 停止", command=self._stop_crawl,
+            style="secondary", padx=16, pady=10,
+        )
+        self.stop_btn.pack(side="left", padx=(0, 8))
+        self.stop_btn.config(state="disabled")
+
+        open_btn = ModernButton(
+            btn_inner, "📂 打开目录", command=self._open_save_dir,
+            style="purple", padx=16, pady=10,
+        )
+        open_btn.pack(side="right")
+
         # ── 储存路径 ──
         path_card = self._card(parent)
         self._section_header(path_card, "储存路径", "📁")
@@ -608,10 +638,10 @@ class PinterestCrawlerApp:
         # ── 参数设置 ──
         param_card = self._card(parent)
         self._section_header(param_card, "爬取参数", "⚙️")
-        
+
         param_inner = tk.Frame(param_card, bg=THEME["bg_card"])
         param_inner.pack(fill="x", padx=12, pady=(0, 12))
-        
+
         # 每层图片数
         self._build_slider_row(
             param_inner,
@@ -620,7 +650,7 @@ class PinterestCrawlerApp:
             min_val=3, max_val=50, step=1,
             unit="张",
         )
-        
+
         # 层数
         self._build_slider_row(
             param_inner,
@@ -630,32 +660,7 @@ class PinterestCrawlerApp:
             unit="层",
             hint="层数越多，图片越丰富但耗时越长",
         )
-        
-        # ── 操作按钮 ──
-        btn_card = self._card(parent)
-        btn_inner = tk.Frame(btn_card, bg=THEME["bg_card"])
-        btn_inner.pack(fill="x", padx=12, pady=12)
-        
-        self.start_btn = ModernButton(
-            btn_inner, "🚀  开始爬取", command=self._start_crawl,
-            style="primary", padx=30, pady=12,
-            font=("Segoe UI", 12, "bold"),
-        )
-        self.start_btn.pack(side="left", padx=(0, 8))
-        
-        self.stop_btn = ModernButton(
-            btn_inner, "⏹ 停止", command=self._stop_crawl,
-            style="secondary",
-        )
-        self.stop_btn.pack(side="left", padx=(0, 8))
-        self.stop_btn.config(state="disabled")
-        
-        open_btn = ModernButton(
-            btn_inner, "📂 打开目录", command=self._open_save_dir,
-            style="purple",
-        )
-        open_btn.pack(side="right")
-    
+
     def _build_slider_row(self, parent, label, var, min_val, max_val, step, unit="", hint=""):
         """构建滑块行 — 现代布局 + Canvas 自绘滑块"""
         outer = tk.Frame(parent, bg=THEME["bg_card"],
