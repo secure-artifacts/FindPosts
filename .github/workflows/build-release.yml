@@ -38,10 +38,9 @@ jobs:
             --icon log.ico `
             --add-data "log.ico;." `
             --add-data "pinterest_crawler.py;." `
-            --hidden-import selenium `
-            --hidden-import webdriver_manager `
-            --hidden-import webdriver_manager.chrome `
-            --hidden-import requests `
+            --collect-all selenium `
+            --collect-all webdriver_manager `
+            --collect-all requests `
             --hidden-import pystray `
             --hidden-import PIL `
             --hidden-import PIL.Image `
