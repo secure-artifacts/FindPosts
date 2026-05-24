@@ -1,8 +1,10 @@
 """
 Pinterest Image Crawler - UI 主界面
 现代化深色主题 Tkinter GUI
-v1.0.0
 """
+
+APP_VERSION = "1.1.0"   # ← 版本号在此统一维护
+
 
 import os
 import sys
@@ -898,10 +900,10 @@ class PinterestCrawlerApp:
         )
         self.status_label.pack(side="left", padx=8)
         
-        # 版本信息
+        # 版本信息（右下角）
         tk.Label(
             status_frame,
-            text="v1.0 · Pinterest Crawler",
+            text=f"v{APP_VERSION} · Pinterest Crawler",
             font=("Segoe UI", 8),
             bg=THEME["bg_panel"],
             fg=THEME["text_muted"],

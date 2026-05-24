@@ -294,25 +294,28 @@ class PinterestAPI:
 
     # ── 公开方法 ─────────────────────────────────────
     def search_pins(self, query: str, count: int = 50) -> List[dict]:
-        """关键词搜索（SearchResource）"""
-        result = self._get(
-            "SearchResource",
-            {
-                "query": query,
-                "scope": "pins",
-                "page_size": min(count, 50),
-                "redux_normalize_feed": True,
-            },
-            f"/search/pins/?q={quote(query)}",
-        )
-        if not result:
-            return []
-        pins = (
-            result.get("resource_response", {})
-                  .get("data", {})
-                  .get("results", [])
-        )
-        return self._pins_to_items(pins)
+        """关键词搜索（同时尝试两个端点）"""
+        for endpoint in ["BaseSearchResource", "SearchResource"]:
+            result = self._get(
+                endpoint,
+                {
+                    "query": query,
+                    "scope": "pins",
+                    "page_size": min(count, 50),
+                    "redux_normalize_feed": True,
+                },
+                f"/search/pins/?q={quote(query)}",
+            )
+            if result:
+                pins = (
+                    result.get("resource_response", {})
+                          .get("data", {})
+                          .get("results", [])
+                )
+                items = self._pins_to_items(pins)
+                if items:
+                    return items
+        return []
 
     def get_pin_image(self, pin_id: str) -> str:
         """获取单个 Pin 的高清图片 URL（PinResource）"""
@@ -484,46 +487,19 @@ class PinterestCrawler:
             self._emit_log(f"❌ 浏览器启动失败: {e}", "ERROR")
             raise
 
-    def _wait_for_images(self, timeout: int = 25):
-        """等待页面 Pinterest 图片加载完成"""
-        # 等待 DOM 就绪
-        try:
-            WebDriverWait(self.driver, 10).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
-        except Exception:
-            pass
-
-        # 打印页面标题，帮助判断是否被跳转到验证页
-        try:
-            title = self.driver.title
-            self._emit_log(f"📄 页面: {title[:60]}")
-        except Exception:
-            pass
-
-        # 等待真正的 Pinterest 图片（pinimg.com）
+    def _wait_for_images(self, timeout: int = 20):
+        """等待页面图片加载（与 v1.0.5 一致：任意 img[src] 即可）"""
         try:
             WebDriverWait(self.driver, timeout).until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, "img[src*='pinimg.com']")
-                )
+                EC.presence_of_element_located((By.CSS_SELECTOR, "img[src]"))
             )
-            return  # 已找到
         except TimeoutException:
             pass
-
-        # 备用：从 srcset 中检测
+        # 记录页面标题，帮助诊断是否被拦截
         try:
-            count = self.driver.execute_script(
-                "return document.querySelectorAll('img[srcset*=\'pinimg\']').length"
-            )
-            if count > 0:
-                self._emit_log(f"🔍 通过 srcset 检测到 {count} 张图片")
-                return
+            self._emit_log(f"📄 页面: {self.driver.title[:50]}")
         except Exception:
             pass
-
-        self._emit_log("⚠️ 等待图片超时，尝试继续...", "WARNING")
 
     # ── JavaScript 通用提取（不依赖具体 CSS 选择器）──────────────
     _JS_EXTRACT = """
@@ -577,10 +553,10 @@ class PinterestCrawler:
 
     def _extract_image_urls_from_page(self, max_count: int) -> List[dict]:
         """
-        用 JavaScript 从页面提取图片（不依赖具体 CSS 选择器，兼容 Pinterest 各版本）
+        从页面提取图片 — CSS 选择器（v1.0.5 方法，已验证可靠）为主，JS 为备用
         返回: [{"img_url": ..., "pin_url": ...}, ...]
         """
-        results = []
+        results: List[dict] = []
         seen_urls: Set[str] = set()
         scroll_attempts = 0
         max_scroll = max(6, max_count // 2)
@@ -590,22 +566,63 @@ class PinterestCrawler:
                 break
 
             try:
-                raw = self.driver.execute_script(self._JS_EXTRACT, max_count * 3)
-                for item in (raw or []):
+                # 主方法：CSS 选择器（v1.0.5 经典步骤）
+                pin_elements = self.driver.find_elements(
+                    By.CSS_SELECTOR, "a[href*='/pin/']"
+                )
+                for elem in pin_elements:
                     if len(results) >= max_count:
                         break
-                    img_url  = upgrade_image_url(item.get("img_url", ""))
-                    pin_url  = normalize_pinterest_url(item.get("pin_url", ""))
-                    if img_url and pin_url and img_url not in seen_urls:
-                        seen_urls.add(img_url)
-                        results.append({"img_url": img_url, "pin_url": pin_url})
+                    try:
+                        href = elem.get_attribute("href") or ""
+                        if "/pin/" not in href:
+                            continue
+                        try:
+                            img = elem.find_element(By.TAG_NAME, "img")
+                        except NoSuchElementException:
+                            continue
+                        # 依次尝试 src / data-src / srcset
+                        img_src = img.get_attribute("src") or ""
+                        if not img_src or "pinimg.com" not in img_src:
+                            img_src = img.get_attribute("data-src") or ""
+                        if not img_src or "pinimg.com" not in img_src:
+                            ss = img.get_attribute("srcset") or ""
+                            if "pinimg.com" in ss:
+                                parts = ss.split(",")
+                                img_src = parts[-1].strip().split()[0]
+                        if not img_src or "pinimg.com" not in img_src:
+                            continue
+                        img_src = upgrade_image_url(img_src)
+                        if img_src in seen_urls:
+                            continue
+                        seen_urls.add(img_src)
+                        if href.startswith("/"):
+                            href = "https://www.pinterest.com" + href
+                        results.append({"img_url": img_src, "pin_url": href})
+                    except (StaleElementReferenceException, Exception):
+                        continue
             except Exception as e:
-                self.logger.debug(f"JS提取出错: {e}")
+                self.logger.debug(f"提取图片出错: {e}")
 
             if len(results) < max_count:
                 human_scroll(self.driver, scroll_count=2)
                 scroll_attempts += 1
                 random_sleep(1.5, 3.0)
+
+        # 备用：CSS 没找到时用 JS 内容提取
+        if not results:
+            try:
+                raw = self.driver.execute_script(self._JS_EXTRACT, max_count * 3) or []
+                for item in raw:
+                    if len(results) >= max_count:
+                        break
+                    iu = upgrade_image_url(item.get("img_url", ""))
+                    pu = item.get("pin_url", "")
+                    if iu and pu and iu not in seen_urls:
+                        seen_urls.add(iu)
+                        results.append({"img_url": iu, "pin_url": pu})
+            except Exception as e:
+                self.logger.debug(f"JS备用提取出错: {e}")
 
         self._emit_log(f"📸 当前页面找到 {len(results)} 张图片")
         return results[:max_count]
@@ -643,71 +660,91 @@ class PinterestCrawler:
             return []
 
     def _get_related_pins(self, pin_url: str, max_count: int) -> List[dict]:
-        """获取相关图片 — 优先 API，其次浏览器，最后关键词搜索"""
-        pin_url = normalize_pinterest_url(pin_url)
-        pin_id  = extract_pin_id(pin_url)
+        """
+        获取相关图片。优先 API，其次浏览器。
+        重要：不对 URL 做区域规范化，保留原始域名（如 pt.pinterest.com）。
+        """
+        pin_id = extract_pin_id(pin_url)
 
-        # ── 第一优先：RelatedPinFeedResource API ──
+        # ── 优先：RelatedPinFeedResource API ──
         if pin_id:
-            self._emit_log(f"🌐 API 获取相关图片 (pin/{pin_id})", "INFO")
+            self._emit_log(f"🌐 API 获取相关图片 (pin/{pin_id})")
             related = self.api.get_related_pins(pin_id, count=max_count * 2)
             if related:
                 self._emit_log(f"🔗 API 找到 {len(related)} 张相关图片")
                 return related[:max_count]
 
-        # ── 第二优先：浏览器 More Like This ──
+        # ── 备用：浏览器 CSS 选择器（v1.0.5 经典方法）──
         try:
             if not self.driver:
                 self.driver = self._init_driver()
             self._emit_log(f"🔍 浏览器访问Pin页: {pin_url}")
-            self.driver.get(pin_url)
-            random_sleep(3.5, 5.5)
+            self.driver.get(pin_url)   # 保留原始 URL，不做域名规范化
+            random_sleep(3.0, 5.0)
             self._wait_for_images()
+            human_scroll(self.driver, scroll_count=3)
+            random_sleep(2.0, 3.5)
 
-            for _ in range(3):
-                human_scroll(self.driver, scroll_count=3)
-                random_sleep(1.5, 2.5)
-
-            current_pin_id = pin_id
+            related_results: List[dict] = []
             seen_urls: Set[str] = set()
-            related_results = []
+            scroll_attempts = 0
+            max_scroll = max(6, max_count // 2)
+            current_pin_id = pin_id
 
-            for _ in range(3):
+            while len(related_results) < max_count and scroll_attempts < max_scroll:
                 if self.stop_event.is_set():
                     break
-                raw = self.driver.execute_script(self._JS_EXTRACT, max_count * 4) or []
-                for item in raw:
-                    if len(related_results) >= max_count:
-                        break
-                    img_url = upgrade_image_url(item.get("img_url", ""))
-                    rel_url = normalize_pinterest_url(item.get("pin_url", ""))
-                    if extract_pin_id(rel_url) == current_pin_id:
-                        continue
-                    if img_url and rel_url and img_url not in seen_urls:
-                        seen_urls.add(img_url)
-                        related_results.append({"img_url": img_url, "pin_url": rel_url})
-                if len(related_results) >= max_count:
-                    break
-                human_scroll(self.driver, scroll_count=2)
-                random_sleep(1.5, 2.0)
+                try:
+                    pin_links = self.driver.find_elements(
+                        By.CSS_SELECTOR, "a[href*='/pin/']"
+                    )
+                    for link in pin_links:
+                        if len(related_results) >= max_count:
+                            break
+                        try:
+                            href = link.get_attribute("href") or ""
+                            if "/pin/" not in href:
+                                continue
+                            if extract_pin_id(href) == current_pin_id:
+                                continue
+                            try:
+                                img = link.find_element(By.TAG_NAME, "img")
+                            except NoSuchElementException:
+                                continue
+                            img_src = img.get_attribute("src") or ""
+                            if not img_src or "pinimg.com" not in img_src:
+                                img_src = img.get_attribute("data-src") or ""
+                            if not img_src or "pinimg.com" not in img_src:
+                                ss = img.get_attribute("srcset") or ""
+                                if "pinimg.com" in ss:
+                                    img_src = ss.split(",")[-1].strip().split()[0]
+                            if not img_src or "pinimg.com" not in img_src:
+                                continue
+                            img_src = upgrade_image_url(img_src)
+                            if img_src in seen_urls:
+                                continue
+                            seen_urls.add(img_src)
+                            if href.startswith("/"):
+                                href = "https://www.pinterest.com" + href
+                            related_results.append({"img_url": img_src, "pin_url": href})
+                        except (StaleElementReferenceException, Exception):
+                            continue
+                except Exception as e:
+                    self.logger.debug(f"提取相关图片出错: {e}")
+
+                if len(related_results) < max_count:
+                    human_scroll(self.driver, scroll_count=2)
+                    scroll_attempts += 1
+                    random_sleep(1.5, 3.0)
 
             if related_results:
                 self._emit_log(f"🔗 浏览器找到 {len(related_results)} 张相关图片")
                 return related_results[:max_count]
+
         except Exception as e:
             self._emit_log(f"⚠️ 浏览器获取相关图片失败: {e}", "WARNING")
 
-        # ── 第三优先：关键词搜索兼容 ──
-        self._emit_log("🔄 More Like This 无数据，改用关键词搜索...")
-        keyword = self._extract_page_keywords()
-        if keyword and self.driver:
-            return self._search_for_images(keyword, max_count)
-
-        # 如果连浏览器也没有，用 API 搜索 pin 描述词
-        if pin_id:
-            pin_data = self.api.get_pin_image(pin_id)  # 尝试用 pin_id 搜索
-
-        self._emit_log("⚠️ 无法获取相关图片，跳过", "WARNING")
+        self._emit_log("⚠️ 未找到相关图片，跳过", "WARNING")
         return []
 
     def _process_keyword_task(self, keyword: str, task_dir: str):
@@ -751,62 +788,48 @@ class PinterestCrawler:
             self._process_extended_layers(layer1_pins[:self.imgs_per_layer], task_dir)
 
     def _process_url_task(self, url: str, task_dir: str):
-        """处理Pinterest链接任务 — 优先用 API，浏览器为备用"""
-        url = normalize_pinterest_url(url)
+        """处理Pinterest链接任务 — API 优先，浏览器保留原始 URL"""
         pin_id = extract_pin_id(url)
         self._emit_log(f"🔗 处理Pin链接: {url} (ID: {pin_id})")
 
         layer1_dir = os.path.join(task_dir, "第一层-最相关")
         os.makedirs(layer1_dir, exist_ok=True)
         self._emit_log("📥 第一层：下载原始Pin图片")
-
         downloaded_l1 = 0
 
-        # ── 优先：通过 API 直接获取 Pin 主图 ──
+        # ── 优先： API 直接获取主图 ──
         if pin_id:
             img_url = self.api.get_pin_image(pin_id)
             if img_url:
                 if self.downloader.download_image(img_url, layer1_dir, "L1_001"):
                     downloaded_l1 = 1
 
-        # ── 备用：浏览器提取 ──
+        # ── 备用：浏览器，使用原始 URL ──
         if downloaded_l1 == 0:
             if not self.driver:
                 self.driver = self._init_driver()
-            self.driver.get(url)
-            random_sleep(3.5, 5.5)
+            self.driver.get(url)   # 保留原始 URL，不做域名规范化
+            random_sleep(3.0, 5.0)
             self._wait_for_images()
-
-            raw = self.driver.execute_script(self._JS_EXTRACT, 10) or []
+            # 先用 CSS 选择器
             seen_l1: Set[str] = set()
-            for i, item in enumerate(raw[:10]):
+            for elem in self.driver.find_elements(
+                By.CSS_SELECTOR, "img[src*='pinimg.com']"
+            )[:10]:
                 if downloaded_l1 >= 1:
                     break
-                src = upgrade_image_url(item.get("img_url", ""))
-                if not src or src in seen_l1:
-                    continue
-                seen_l1.add(src)
-                if self.downloader.download_image(src, layer1_dir, f"L1_{i+1:03d}"):
-                    downloaded_l1 += 1
-
-            if downloaded_l1 == 0:
-                for elem in self.driver.find_elements(
-                    By.CSS_SELECTOR, "img[src*='pinimg.com']"
-                )[:5]:
-                    try:
-                        src = upgrade_image_url(elem.get_attribute("src") or "")
-                        if src and self.downloader.download_image(src, layer1_dir, "L1_001"):
+                try:
+                    src = upgrade_image_url(elem.get_attribute("src") or "")
+                    if src and src not in seen_l1:
+                        seen_l1.add(src)
+                        if self.downloader.download_image(src, layer1_dir, "L1_001"):
                             downloaded_l1 = 1
-                            break
-                    except Exception:
-                        continue
+                except Exception:
+                    continue
 
         self._emit_log(f"✅ 第一层完成，下载 {downloaded_l1} 张")
-
         if self.max_layers >= 2:
-            self._process_extended_layers(
-                [{"img_url": "", "pin_url": url}], task_dir
-            )
+            self._process_extended_layers([{"img_url": "", "pin_url": url}], task_dir)
 
     def _process_extended_layers(self, source_pins: List[dict], task_dir: str):
         """处理延伸层（第二层及以上）"""

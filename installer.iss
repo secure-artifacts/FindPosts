@@ -10,6 +10,7 @@
 #define MyAppExeName   "PinterestCrawler.exe"
 
 [Setup]
+; AppId 固定不变 → Windows 将新版本识别为对旧版本的升级，无需手动卸载
 AppId={{A3F2B8C4-1D2E-4F56-8A9B-C0D1E2F34567}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
@@ -27,12 +28,18 @@ SetupIconFile=log.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+; 允许普通用户安装/升级（不强制要求管理员）
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
+; 安装前自动关闭正在运行的旧版本
+CloseApplications=yes
+CloseApplicationsFilter=*PinterestCrawler*
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
